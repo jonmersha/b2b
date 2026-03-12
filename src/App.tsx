@@ -25,7 +25,8 @@ import {
   Timestamp,
   orderBy
 } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { auth, db, storage } from './firebase';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { 
   LayoutDashboard, 
   Package, 
@@ -73,10 +74,15 @@ interface Product {
   name: string;
   description: string;
   price: number;
+  bulkPrice?: number;
+  bulkThreshold?: number;
+  minOrderQuantity?: number;
   stock: number;
   dealerId: string;
   category: string;
   imageUrl?: string;
+  status: 'draft' | 'registered' | 'active';
+  dealerCompanyName?: string;
 }
 
 interface OrderItem {
@@ -84,6 +90,7 @@ interface OrderItem {
   name: string;
   quantity: number;
   price: number;
+  imageUrl?: string;
 }
 
 interface Order {
@@ -352,7 +359,7 @@ export default function App() {
               transition={{ duration: 0.2 }}
             >
               {activeTab === 'dashboard' && <Dashboard profile={profile} />}
-              {activeTab === 'inventory' && profile.role === 'dealer' && <Inventory dealerId={profile.uid} />}
+              {activeTab === 'inventory' && profile.role === 'dealer' && <Inventory profile={profile} />}
               {activeTab === 'catalog' && profile.role === 'reseller' && <Catalog resellerId={profile.uid} />}
               {activeTab === 'orders' && <Orders profile={profile} />}
             </motion.div>
@@ -619,10 +626,12 @@ function StatCard({ icon, label, value, trend }: { icon: React.ReactNode; label:
   );
 }
 
-function Inventory({ dealerId }: { dealerId: string }) {
+function Inventory({ profile }: { profile: UserProfile }) {
+  const dealerId = profile.uid;
   const [products, setProducts] = useState<Product[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
     const q = query(collection(db, 'products'), where('dealerId', '==', dealerId));
@@ -631,29 +640,48 @@ function Inventory({ dealerId }: { dealerId: string }) {
     });
   }, [dealerId]);
 
-  const handleSave = async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSave = async (e: React.FormEvent<HTMLFormElement>, status: Product['status'] = 'draft') => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    const productData = {
-      name: formData.get('name') as string,
-      description: formData.get('description') as string,
-      price: Number(formData.get('price')),
-      stock: Number(formData.get('stock')),
-      category: formData.get('category') as string,
-      dealerId,
-    };
+    const imageFile = formData.get('image') as File;
+    
+    setUploading(true);
+    let imageUrl = editingProduct?.imageUrl || '';
 
     try {
+      if (imageFile && imageFile.size > 0) {
+        const storageRef = ref(storage, `products/${dealerId}/${Date.now()}_${imageFile.name}`);
+        const snapshot = await uploadBytes(storageRef, imageFile);
+        imageUrl = await getDownloadURL(snapshot.ref);
+      }
+
+      const productData = {
+        name: formData.get('name') as string,
+        description: formData.get('description') as string,
+        price: Number(formData.get('price')),
+        bulkPrice: formData.get('bulkPrice') ? Number(formData.get('bulkPrice')) : null,
+        bulkThreshold: formData.get('bulkThreshold') ? Number(formData.get('bulkThreshold')) : null,
+        minOrderQuantity: formData.get('minOrderQuantity') ? Number(formData.get('minOrderQuantity')) : 1,
+        stock: Number(formData.get('stock')),
+        category: formData.get('category') as string,
+        dealerId,
+        dealerCompanyName: profile?.companyName,
+        status,
+        imageUrl,
+      };
+
       if (editingProduct) {
         await updateDoc(doc(db, 'products', editingProduct.id), productData);
       } else {
         await addDoc(collection(db, 'products'), productData);
       }
+      setIsModalOpen(false);
+      setEditingProduct(null);
     } catch (error) {
       handleFirestoreError(error, editingProduct ? OperationType.UPDATE : OperationType.CREATE, 'products');
+    } finally {
+      setUploading(false);
     }
-    setIsModalOpen(false);
-    setEditingProduct(null);
   };
 
   return (
@@ -678,8 +706,9 @@ function Inventory({ dealerId }: { dealerId: string }) {
             <tr className="bg-slate-50 border-b border-slate-200">
               <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Product</th>
               <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Category</th>
-              <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Price</th>
+              <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Pricing</th>
               <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Stock</th>
+              <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Status</th>
               <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">Actions</th>
             </tr>
           </thead>
@@ -688,8 +717,12 @@ function Inventory({ dealerId }: { dealerId: string }) {
               <tr key={product.id} className="hover:bg-slate-50 transition-colors">
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center">
-                      <Box size={20} className="text-slate-400" />
+                    <div className="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center overflow-hidden">
+                      {product.imageUrl ? (
+                        <img src={product.imageUrl} alt={product.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <Box size={20} className="text-slate-400" />
+                      )}
                     </div>
                     <div>
                       <p className="text-sm font-bold text-slate-900">{product.name}</p>
@@ -700,7 +733,17 @@ function Inventory({ dealerId }: { dealerId: string }) {
                 <td className="px-6 py-4">
                   <Badge>{product.category}</Badge>
                 </td>
-                <td className="px-6 py-4 text-sm font-medium text-slate-900">${product.price}</td>
+                <td className="px-6 py-4">
+                  <div className="text-sm">
+                    <p className="font-medium text-slate-900">${product.price}</p>
+                    {product.bulkPrice && (
+                      <p className="text-xs text-emerald-600 font-medium">Bulk: ${product.bulkPrice} ({product.bulkThreshold}+)</p>
+                    )}
+                    {product.minOrderQuantity && product.minOrderQuantity > 1 && (
+                      <p className="text-[10px] text-slate-400">Min: {product.minOrderQuantity}</p>
+                    )}
+                  </div>
+                </td>
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-2">
                     <div className={cn(
@@ -709,6 +752,11 @@ function Inventory({ dealerId }: { dealerId: string }) {
                     )} />
                     <span className="text-sm text-slate-700">{product.stock} units</span>
                   </div>
+                </td>
+                <td className="px-6 py-4">
+                  <Badge variant={product.status === 'active' ? 'success' : product.status === 'registered' ? 'info' : 'default'}>
+                    {product.status}
+                  </Badge>
                 </td>
                 <td className="px-6 py-4 text-right">
                   <Button variant="ghost" size="sm" onClick={() => { setEditingProduct(product); setIsModalOpen(true); }}>
@@ -731,18 +779,18 @@ function Inventory({ dealerId }: { dealerId: string }) {
                 <X size={24} className="text-slate-400" />
               </button>
             </div>
-            <form onSubmit={handleSave} className="space-y-4">
+            <form onSubmit={(e) => handleSave(e, editingProduct?.status || 'draft')} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Product Name</label>
                 <input name="name" defaultValue={editingProduct?.name} required className="w-full px-4 py-2 rounded-lg border border-slate-200" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Description</label>
-                <textarea name="description" defaultValue={editingProduct?.description} className="w-full px-4 py-2 rounded-lg border border-slate-200" rows={3} />
+                <textarea name="description" defaultValue={editingProduct?.description} className="w-full px-4 py-2 rounded-lg border border-slate-200" rows={2} />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Price ($)</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Base Price ($)</label>
                   <input name="price" type="number" step="0.01" defaultValue={editingProduct?.price} required className="w-full px-4 py-2 rounded-lg border border-slate-200" />
                 </div>
                 <div>
@@ -750,13 +798,52 @@ function Inventory({ dealerId }: { dealerId: string }) {
                   <input name="stock" type="number" defaultValue={editingProduct?.stock} required className="w-full px-4 py-2 rounded-lg border border-slate-200" />
                 </div>
               </div>
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Bulk Price ($)</label>
+                  <input name="bulkPrice" type="number" step="0.01" defaultValue={editingProduct?.bulkPrice} className="w-full px-4 py-2 rounded-lg border border-slate-200" placeholder="Optional" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Bulk Threshold</label>
+                  <input name="bulkThreshold" type="number" defaultValue={editingProduct?.bulkThreshold} className="w-full px-4 py-2 rounded-lg border border-slate-200" placeholder="e.g. 10" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Min Order Qty</label>
+                  <input name="minOrderQuantity" type="number" defaultValue={editingProduct?.minOrderQuantity || 1} className="w-full px-4 py-2 rounded-lg border border-slate-200" />
+                </div>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Category</label>
                 <input name="category" defaultValue={editingProduct?.category} required className="w-full px-4 py-2 rounded-lg border border-slate-200" />
               </div>
-              <div className="pt-4 flex gap-3">
-                <Button type="button" variant="outline" className="flex-1" onClick={() => { setIsModalOpen(false); setEditingProduct(null); }}>Cancel</Button>
-                <Button type="submit" className="flex-1">Save Product</Button>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Product Image</label>
+                <input name="image" type="file" accept="image/*" className="w-full px-4 py-2 rounded-lg border border-slate-200 text-sm" />
+                {editingProduct?.imageUrl && <p className="text-[10px] text-slate-400 mt-1">Current image exists. Upload new to replace.</p>}
+              </div>
+              <div className="pt-4 flex flex-col gap-3">
+                <div className="flex gap-3">
+                  <Button type="button" variant="outline" className="flex-1" onClick={() => { setIsModalOpen(false); setEditingProduct(null); }}>Cancel</Button>
+                  <Button type="submit" className="flex-1" disabled={uploading}>
+                    {uploading ? 'Uploading...' : 'Save Draft'}
+                  </Button>
+                </div>
+                <Button 
+                  type="button" 
+                  variant="secondary" 
+                  className="w-full"
+                  disabled={uploading}
+                  onClick={(e) => {
+                    const form = (e.currentTarget.closest('form') as HTMLFormElement);
+                    if (form.checkValidity()) {
+                      handleSave({ preventDefault: () => {}, currentTarget: form } as any, 'active');
+                    } else {
+                      form.reportValidity();
+                    }
+                  }}
+                >
+                  {uploading ? 'Uploading...' : 'Register & Activate Product'}
+                </Button>
               </div>
             </form>
           </Card>
@@ -770,27 +857,63 @@ function Catalog({ resellerId }: { resellerId: string }) {
   const [products, setProducts] = useState<Product[]>([]);
   const [cart, setCart] = useState<OrderItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
-    return onSnapshot(collection(db, 'products'), (snapshot) => {
+    const q = query(collection(db, 'products'), where('status', '==', 'active'));
+    return onSnapshot(q, (snapshot) => {
       setProducts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
     });
   }, []);
 
+  const filteredProducts = useMemo(() => {
+    return products.filter(p => 
+      p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.dealerCompanyName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.category.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [products, searchQuery]);
+
+  const getEffectivePrice = (product: Product, quantity: number) => {
+    if (product.bulkPrice && product.bulkThreshold && quantity >= product.bulkThreshold) {
+      return product.bulkPrice;
+    }
+    return product.price;
+  };
+
   const addToCart = (product: Product) => {
+    const minQty = product.minOrderQuantity || 1;
     setCart(prev => {
       const existing = prev.find(item => item.productId === product.id);
       if (existing) {
-        return prev.map(item => item.productId === product.id ? { ...item, quantity: item.quantity + 1 } : item);
+        const newQty = existing.quantity + 1;
+        return prev.map(item => item.productId === product.id ? { ...item, quantity: newQty, price: getEffectivePrice(product, newQty) } : item);
       }
-      return [...prev, { productId: product.id, name: product.name, quantity: 1, price: product.price }];
+      return [...prev, { productId: product.id, name: product.name, quantity: minQty, price: getEffectivePrice(product, minQty), imageUrl: product.imageUrl }];
+    });
+  };
+
+  const updateCartQuantity = (productId: string, delta: number) => {
+    setCart(prev => {
+      return prev.map(item => {
+        if (item.productId !== productId) return item;
+        const product = products.find(p => p.id === productId);
+        if (!product) return item;
+        
+        const minQty = product.minOrderQuantity || 1;
+        const newQty = Math.max(0, item.quantity + delta);
+        
+        if (newQty === 0) return null;
+        if (newQty < minQty && delta < 0) return null; // Remove if below min qty when decreasing
+        
+        return { ...item, quantity: newQty, price: getEffectivePrice(product, newQty) };
+      }).filter(Boolean) as OrderItem[];
     });
   };
 
   const handlePlaceOrder = async () => {
     if (cart.length === 0) return;
     
-    // Group by dealer
     const dealerIds = Array.from(new Set(cart.map(item => {
       const p = products.find(prod => prod.id === item.productId);
       return p?.dealerId;
@@ -798,6 +921,7 @@ function Catalog({ resellerId }: { resellerId: string }) {
 
     for (const dealerId of dealerIds) {
       if (!dealerId) continue;
+      
       const dealerItems = cart.filter(item => {
         const p = products.find(prod => prod.id === item.productId);
         return p?.dealerId === dealerId;
@@ -826,12 +950,14 @@ function Catalog({ resellerId }: { resellerId: string }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center gap-4">
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
           <input
             type="text"
-            placeholder="Search products..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search products or wholesalers..."
             className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
           />
         </div>
@@ -846,20 +972,48 @@ function Catalog({ resellerId }: { resellerId: string }) {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-        {products.map((product) => (
-          <Card key={product.id} className="flex flex-col">
-            <div className="aspect-square bg-slate-100 flex items-center justify-center">
-              <Box size={48} className="text-slate-300" />
+        {filteredProducts.map((product) => (
+          <Card key={product.id} className="flex flex-col hover:border-indigo-200 transition-all group">
+            <div className="aspect-square bg-slate-100 flex items-center justify-center relative overflow-hidden">
+              {product.imageUrl ? (
+                <img src={product.imageUrl} alt={product.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform" referrerPolicy="no-referrer" />
+              ) : (
+                <Box size={48} className="text-slate-300 group-hover:scale-110 transition-transform" />
+              )}
+              {product.bulkPrice && (
+                <div className="absolute top-2 right-2 bg-emerald-500 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm">
+                  BULK SAVINGS
+                </div>
+              )}
             </div>
             <div className="p-4 flex-1 flex flex-col">
-              <div className="flex justify-between items-start mb-2">
-                <h3 className="font-bold text-slate-900">{product.name}</h3>
-                <Badge variant="success">${product.price}</Badge>
+              <div className="flex justify-between items-start mb-1">
+                <h3 className="font-bold text-slate-900 truncate">{product.name}</h3>
+                <div className="text-right">
+                  <p className="font-bold text-indigo-600">${product.price}</p>
+                  {product.bulkPrice && (
+                    <p className="text-[10px] text-emerald-600 font-medium">Bulk: ${product.bulkPrice}</p>
+                  )}
+                </div>
               </div>
+              <p className="text-[10px] text-slate-400 mb-2 flex items-center gap-1">
+                <Store size={10} /> {product.dealerCompanyName || 'Wholesaler'}
+              </p>
               <p className="text-sm text-slate-500 mb-4 line-clamp-2">{product.description}</p>
-              <div className="mt-auto pt-4 flex items-center justify-between">
-                <span className="text-xs font-medium text-slate-400">{product.stock} in stock</span>
-                <Button size="sm" onClick={() => addToCart(product)} disabled={product.stock === 0}>
+              
+              <div className="mt-auto space-y-3">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="font-medium text-slate-400">{product.stock} in stock</span>
+                  {product.minOrderQuantity && product.minOrderQuantity > 1 && (
+                    <span className="text-amber-600 font-semibold">Min: {product.minOrderQuantity} units</span>
+                  )}
+                </div>
+                <Button 
+                  className="w-full" 
+                  size="sm" 
+                  onClick={() => addToCart(product)} 
+                  disabled={product.stock === 0}
+                >
                   Add to Cart
                 </Button>
               </div>
@@ -887,28 +1041,42 @@ function Catalog({ resellerId }: { resellerId: string }) {
                   <p className="text-slate-500">Your cart is empty</p>
                 </div>
               ) : (
-                cart.map((item) => (
-                  <div key={item.productId} className="flex items-center gap-4 p-3 rounded-lg border border-slate-100">
-                    <div className="w-12 h-12 bg-slate-50 rounded-lg flex items-center justify-center">
-                      <Box size={20} className="text-slate-400" />
+                cart.map((item) => {
+                  const product = products.find(p => p.id === item.productId);
+                  const isBulk = product?.bulkThreshold && item.quantity >= product.bulkThreshold;
+                  
+                  return (
+                    <div key={item.productId} className="flex items-center gap-4 p-3 rounded-lg border border-slate-100">
+                      <div className="w-12 h-12 bg-slate-50 rounded-lg flex items-center justify-center overflow-hidden">
+                        {item.imageUrl ? (
+                          <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <Box size={20} className="text-slate-400" />
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-sm font-bold text-slate-900">{item.name}</p>
+                        <div className="flex items-center gap-2">
+                          <p className={cn("text-xs font-medium", isBulk ? "text-emerald-600" : "text-slate-500")}>
+                            ${item.price} x {item.quantity}
+                          </p>
+                          {isBulk && <Badge variant="success">Bulk Price</Badge>}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button 
+                          className="w-6 h-6 rounded bg-slate-100 flex items-center justify-center text-slate-600"
+                          onClick={() => updateCartQuantity(item.productId, -1)}
+                        >-</button>
+                        <span className="text-sm font-bold w-4 text-center">{item.quantity}</span>
+                        <button 
+                          className="w-6 h-6 rounded bg-slate-100 flex items-center justify-center text-slate-600"
+                          onClick={() => updateCartQuantity(item.productId, 1)}
+                        >+</button>
+                      </div>
                     </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-bold text-slate-900">{item.name}</p>
-                      <p className="text-xs text-slate-500">${item.price} x {item.quantity}</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button 
-                        className="w-6 h-6 rounded bg-slate-100 flex items-center justify-center text-slate-600"
-                        onClick={() => setCart(prev => prev.map(i => i.productId === item.productId ? { ...i, quantity: Math.max(0, i.quantity - 1) } : i).filter(i => i.quantity > 0))}
-                      >-</button>
-                      <span className="text-sm font-bold w-4 text-center">{item.quantity}</span>
-                      <button 
-                        className="w-6 h-6 rounded bg-slate-100 flex items-center justify-center text-slate-600"
-                        onClick={() => setCart(prev => prev.map(i => i.productId === item.productId ? { ...i, quantity: i.quantity + 1 } : i))}
-                      >+</button>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
             <div className="p-6 border-t border-slate-100 space-y-4">
@@ -975,7 +1143,16 @@ function Orders({ profile }: { profile: UserProfile }) {
             <div className="space-y-3 mb-6">
               {order.items.map((item, idx) => (
                 <div key={idx} className="flex justify-between items-center text-sm">
-                  <span className="text-slate-600">{item.name} <span className="text-slate-400">x{item.quantity}</span></span>
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 bg-slate-50 rounded flex items-center justify-center overflow-hidden">
+                      {item.imageUrl ? (
+                        <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <Box size={14} className="text-slate-300" />
+                      )}
+                    </div>
+                    <span className="text-slate-600">{item.name} <span className="text-slate-400">x{item.quantity}</span></span>
+                  </div>
                   <span className="font-medium text-slate-900">${(item.price * item.quantity).toLocaleString()}</span>
                 </div>
               ))}

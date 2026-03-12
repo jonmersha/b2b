@@ -47,11 +47,17 @@ service cloud.firestore {
     }
 
     function isValidProduct(data) {
-      return data.keys().hasAll(['name', 'price', 'stock', 'dealerId']) &&
+      return data.keys().hasAll(['name', 'price', 'stock', 'dealerId', 'status']) &&
              data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
              data.price is number && data.price >= 0 &&
              data.stock is int && data.stock >= 0 &&
-             data.dealerId == request.auth.uid;
+             data.dealerId == request.auth.uid &&
+             data.status in ['draft', 'registered', 'active'] &&
+             (!('bulkPrice' in data) || data.bulkPrice == null || data.bulkPrice is number) &&
+             (!('bulkThreshold' in data) || data.bulkThreshold == null || data.bulkThreshold is int) &&
+             (!('minOrderQuantity' in data) || data.minOrderQuantity == null || data.minOrderQuantity is int) &&
+             (!('imageUrl' in data) || data.imageUrl is string) &&
+             (!('dealerCompanyName' in data) || data.dealerCompanyName is string);
     }
 
     function isValidOrder(data) {

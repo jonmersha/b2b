@@ -22,12 +22,16 @@
         "name": { "type": "string" },
         "description": { "type": "string" },
         "price": { "type": "number" },
+        "bulkPrice": { "type": "number" },
+        "bulkThreshold": { "type": "integer" },
+        "minOrderQuantity": { "type": "integer" },
         "stock": { "type": "integer" },
         "dealerId": { "type": "string" },
         "category": { "type": "string" },
-        "imageUrl": { "type": "string" }
+        "imageUrl": { "type": "string" },
+        "status": { "type": "string", "enum": ["draft", "registered", "active"] }
       },
-      "required": ["name", "price", "stock", "dealerId"]
+      "required": ["name", "price", "stock", "dealerId", "status"]
     },
     "Order": {
       "title": "Order",
