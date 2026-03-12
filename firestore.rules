@@ -1,0 +1,88 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields: uid, email, role, name, companyName
+    //
+    // Collection: products
+    // Fields: name, description, price, stock, dealerId, category, imageUrl
+    //
+    // Collection: orders
+    // Fields: resellerId, dealerId, items, status, total, createdAt
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isDealer() {
+      return isAuthenticated() && getUserData().role == 'dealer';
+    }
+
+    function isReseller() {
+      return isAuthenticated() && getUserData().role == 'reseller';
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role', 'name']) &&
+             data.uid is string &&
+             data.email is string &&
+             data.role in ['dealer', 'reseller'] &&
+             data.name is string &&
+             data.name.size() > 0 && data.name.size() < 100;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['name', 'price', 'stock', 'dealerId']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             data.price is number && data.price >= 0 &&
+             data.stock is int && data.stock >= 0 &&
+             data.dealerId == request.auth.uid;
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll(['resellerId', 'dealerId', 'items', 'status', 'total', 'createdAt']) &&
+             data.resellerId == request.auth.uid &&
+             data.status in ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'] &&
+             data.total is number && data.total >= 0;
+    }
+
+    // Rules
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                    request.resource.data.role == resource.data.role;
+    }
+
+    match /products/{productId} {
+      allow read: if isAuthenticated();
+      allow create: if isDealer() && isValidProduct(request.resource.data);
+      allow update: if isDealer() && resource.data.dealerId == request.auth.uid && isValidProduct(request.resource.data);
+      allow delete: if isDealer() && resource.data.dealerId == request.auth.uid;
+    }
+
+    match /orders/{orderId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.resellerId || request.auth.uid == resource.data.dealerId);
+      allow create: if isReseller() && isValidOrder(request.resource.data);
+      allow update: if isAuthenticated() && (
+        (request.auth.uid == resource.data.resellerId && request.resource.data.status == 'cancelled' && resource.data.status == 'pending') ||
+        (request.auth.uid == resource.data.dealerId && isDealer())
+      );
+    }
+  }
+}

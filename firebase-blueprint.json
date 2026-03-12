@@ -1,0 +1,73 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile for dealers and resellers",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["dealer", "reseller"] },
+        "name": { "type": "string" },
+        "companyName": { "type": "string" }
+      },
+      "required": ["uid", "email", "role", "name"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Inventory item managed by a dealer",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "number" },
+        "stock": { "type": "integer" },
+        "dealerId": { "type": "string" },
+        "category": { "type": "string" },
+        "imageUrl": { "type": "string" }
+      },
+      "required": ["name", "price", "stock", "dealerId"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Order placed by a reseller to a dealer",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "resellerId": { "type": "string" },
+        "dealerId": { "type": "string" },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "productId": { "type": "string" },
+              "name": { "type": "string" },
+              "quantity": { "type": "integer" },
+              "price": { "type": "number" }
+            }
+          }
+        },
+        "status": { "type": "string", "enum": ["pending", "confirmed", "shipped", "delivered", "cancelled"] },
+        "total": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["resellerId", "dealerId", "items", "status", "total", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Product catalog"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Orders between resellers and dealers"
+    }
+  }
+}
